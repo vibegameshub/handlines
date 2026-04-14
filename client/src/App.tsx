@@ -7,6 +7,52 @@ type Stage = "idle" | "camera" | "countdown" | "analyzing" | "result";
 
 const PALM_BASE = [0, 1, 5, 9, 13, 17];
 
+// Particle system for hand effects
+type Particle = { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; size: number };
+const particles: Particle[] = [];
+
+function spawnParticles(x: number, y: number, color: string, count: number) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = Math.random() * 1.5 + 0.5;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      maxLife: Math.random() * 40 + 20,
+      color,
+      size: Math.random() * 2.5 + 1,
+    });
+  }
+}
+
+function updateAndDrawParticles(ctx: CanvasRenderingContext2D) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vx *= 0.97;
+    p.vy *= 0.97;
+    p.life -= 1 / p.maxLife;
+
+    if (p.life <= 0) {
+      particles.splice(i, 1);
+      continue;
+    }
+
+    ctx.save();
+    ctx.globalAlpha = p.life * 0.8;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+    ctx.fillStyle = p.color;
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
 export default function App() {
   const [stage, setStage] = useState<Stage>("idle");
   const [imageData, setImageData] = useState<string | null>(null);
@@ -224,56 +270,148 @@ export default function App() {
     h: number
   ) => {
     const lm = landmarks.map((p) => ({ x: p.x * w, y: p.y * h }));
+    const t = Date.now() / 1000;
+    const pulse = Math.sin(t * 3) * 0.3 + 0.7; // 0.4 ~ 1.0 pulsing
+    const stability = Math.min(palmStableRef.current / 30, 1); // 0 ~ 1
 
+    // --- Energy aura around palm ---
+    const palmCenter = {
+      x: PALM_BASE.reduce((s, i) => s + lm[i].x, 0) / PALM_BASE.length,
+      y: PALM_BASE.reduce((s, i) => s + lm[i].y, 0) / PALM_BASE.length,
+    };
+    const palmRadius = Math.abs(lm[5].x - lm[17].x) * 0.8;
+
+    // Outer aura rings
+    for (let r = 0; r < 3; r++) {
+      const radius = palmRadius * (1.3 + r * 0.25) + Math.sin(t * 2 + r) * 8;
+      const alpha = (0.12 - r * 0.03) * pulse;
+      ctx.beginPath();
+      ctx.arc(palmCenter.x, palmCenter.y, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(124, 58, 237, ${alpha})`;
+      ctx.lineWidth = 2;
+      ctx.shadowColor = "#7c3aed";
+      ctx.shadowBlur = 20;
+      ctx.stroke();
+    }
+
+    // Rotating energy ring
+    ctx.save();
+    ctx.translate(palmCenter.x, palmCenter.y);
+    ctx.rotate(t * 0.5);
+    const ringRadius = palmRadius * 1.1;
+    for (let i = 0; i < 12; i++) {
+      const angle = (i / 12) * Math.PI * 2;
+      const dotSize = (Math.sin(t * 4 + i) * 0.5 + 1) * 2;
+      ctx.beginPath();
+      ctx.arc(Math.cos(angle) * ringRadius, Math.sin(angle) * ringRadius, dotSize, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(212, 168, 67, ${0.3 + Math.sin(t * 3 + i) * 0.3})`;
+      ctx.shadowColor = "#d4a843";
+      ctx.shadowBlur = 10;
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // --- Palm outline with glow ---
     ctx.shadowColor = "#d4a843";
-    ctx.shadowBlur = 12;
-
-    // Palm outline
+    ctx.shadowBlur = 15 * pulse;
     ctx.beginPath();
-    ctx.strokeStyle = "rgba(212, 168, 67, 0.6)";
+    ctx.strokeStyle = `rgba(212, 168, 67, ${0.4 + stability * 0.3})`;
     ctx.lineWidth = 2;
     const palmPoints = PALM_BASE.map((i) => lm[i]);
     ctx.moveTo(palmPoints[0].x, palmPoints[0].y);
-    for (let i = 1; i < palmPoints.length; i++) {
-      ctx.lineTo(palmPoints[i].x, palmPoints[i].y);
-    }
+    for (let i = 1; i < palmPoints.length; i++) ctx.lineTo(palmPoints[i].x, palmPoints[i].y);
     ctx.closePath();
     ctx.stroke();
 
-    // Heart line
-    drawCurve(ctx, [lm[17], lm[13], lm[9], lm[5]], "#ff6b9d", 2.5);
-    // Head line
-    drawCurve(
-      ctx,
-      [midpoint(lm[0], lm[5]), midpoint(lm[0], lm[9]), midpoint(lm[0], lm[13]), midpoint(lm[0], lm[17])],
-      "#64b5f6",
-      2.5
-    );
-    // Life line
-    drawCurve(ctx, [midpoint(lm[1], lm[5]), lerp(lm[1], lm[0], 0.4), lerp(lm[0], lm[1], 0.7), lm[0]], "#66bb6a", 2.5);
-    // Fate line
-    drawCurve(ctx, [lm[0], midpoint(lm[0], lm[9]), lm[9]], "#ce93d8", 2);
+    // --- Palm lines with animated flow ---
+    const lineWidth = 2.5 + pulse * 0.5;
+
+    // Heart line - pink/red
+    const heartPts = [lm[17], lm[13], lm[9], lm[5]];
+    drawAnimatedCurve(ctx, heartPts, "#ff6b9d", lineWidth, t);
+    // Head line - blue
+    const headPts = [midpoint(lm[0], lm[5]), midpoint(lm[0], lm[9]), midpoint(lm[0], lm[13]), midpoint(lm[0], lm[17])];
+    drawAnimatedCurve(ctx, headPts, "#64b5f6", lineWidth, t + 1);
+    // Life line - green
+    const lifePts = [midpoint(lm[1], lm[5]), lerp(lm[1], lm[0], 0.4), lerp(lm[0], lm[1], 0.7), lm[0]];
+    drawAnimatedCurve(ctx, lifePts, "#66bb6a", lineWidth, t + 2);
+    // Fate line - purple
+    const fatePts = [lm[0], midpoint(lm[0], lm[9]), lm[9]];
+    drawAnimatedCurve(ctx, fatePts, "#ce93d8", lineWidth - 0.5, t + 3);
+
+    // --- Spawn particles along lines occasionally ---
+    if (Math.random() < 0.3) {
+      const allLines = [heartPts, headPts, lifePts, fatePts];
+      const colors = ["#ff6b9d", "#64b5f6", "#66bb6a", "#ce93d8"];
+      const li = Math.floor(Math.random() * allLines.length);
+      const pi = Math.floor(Math.random() * allLines[li].length);
+      spawnParticles(allLines[li][pi].x, allLines[li][pi].y, colors[li], 2);
+    }
 
     ctx.shadowBlur = 0;
 
-    // Landmark dots
-    for (const p of lm) {
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(240, 208, 120, 0.8)";
-      ctx.fill();
-    }
+    // --- Finger connections with energy flow ---
+    const fingers = [[1,2,3,4],[5,6,7,8],[9,10,11,12],[13,14,15,16],[17,18,19,20]];
+    for (let fi = 0; fi < fingers.length; fi++) {
+      const f = fingers[fi];
+      const flowT = (t * 2 + fi * 0.5) % 1;
 
-    // Finger connections
-    const fingers = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16], [17, 18, 19, 20]];
-    ctx.strokeStyle = "rgba(212, 168, 67, 0.3)";
-    ctx.lineWidth = 1.5;
-    for (const f of fingers) {
+      // Base line
       ctx.beginPath();
+      ctx.strokeStyle = `rgba(212, 168, 67, ${0.2 + stability * 0.15})`;
+      ctx.lineWidth = 1.5;
       ctx.moveTo(lm[f[0]].x, lm[f[0]].y);
       for (let i = 1; i < f.length; i++) ctx.lineTo(lm[f[i]].x, lm[f[i]].y);
       ctx.stroke();
+
+      // Energy dot flowing along finger
+      const segIdx = Math.floor(flowT * (f.length - 1));
+      const segT = (flowT * (f.length - 1)) - segIdx;
+      if (segIdx < f.length - 1) {
+        const fx = lm[f[segIdx]].x + (lm[f[segIdx + 1]].x - lm[f[segIdx]].x) * segT;
+        const fy = lm[f[segIdx]].y + (lm[f[segIdx + 1]].y - lm[f[segIdx]].y) * segT;
+        ctx.beginPath();
+        ctx.arc(fx, fy, 3, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(240, 208, 120, ${0.6 + pulse * 0.4})`;
+        ctx.shadowColor = "#f0d078";
+        ctx.shadowBlur = 12;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      }
     }
+
+    // --- Landmark dots with pulsing glow ---
+    for (let i = 0; i < lm.length; i++) {
+      const isBase = PALM_BASE.includes(i);
+      const isTip = [4, 8, 12, 16, 20].includes(i);
+      const dotPulse = Math.sin(t * 4 + i * 0.5) * 0.5 + 0.5;
+      const baseSize = isBase ? 4 : isTip ? 3.5 : 2.5;
+      const size = baseSize + dotPulse * (isBase ? 2 : 1);
+
+      ctx.beginPath();
+      ctx.arc(lm[i].x, lm[i].y, size, 0, Math.PI * 2);
+
+      if (isBase) {
+        ctx.fillStyle = `rgba(240, 208, 120, ${0.7 + dotPulse * 0.3})`;
+        ctx.shadowColor = "#f0d078";
+        ctx.shadowBlur = 15;
+      } else if (isTip) {
+        ctx.fillStyle = `rgba(124, 58, 237, ${0.6 + dotPulse * 0.4})`;
+        ctx.shadowColor = "#7c3aed";
+        ctx.shadowBlur = 12;
+        // Spawn particles from fingertips
+        if (Math.random() < 0.1) spawnParticles(lm[i].x, lm[i].y, "#7c3aed", 1);
+      } else {
+        ctx.fillStyle = `rgba(200, 180, 220, ${0.4 + dotPulse * 0.2})`;
+        ctx.shadowColor = "transparent";
+        ctx.shadowBlur = 0;
+      }
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
+    // --- Update and draw particles ---
+    updateAndDrawParticles(ctx);
   };
 
   const drawScanEffect = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
@@ -482,19 +620,68 @@ function lerp(a: { x: number; y: number }, b: { x: number; y: number }, t: numbe
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }
 
-function drawCurve(
+function drawAnimatedCurve(
   ctx: CanvasRenderingContext2D,
   points: { x: number; y: number }[],
   color: string,
-  width: number
+  width: number,
+  time: number
 ) {
   if (points.length < 2) return;
+  const glow = Math.sin(time * 3) * 0.3 + 0.7;
+
+  // Outer glow layer
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width + 4;
+  ctx.lineCap = "round";
+  ctx.globalAlpha = 0.15 * glow;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 25;
+  traceCurve(ctx, points);
+  ctx.stroke();
+
+  // Main line
+  ctx.globalAlpha = 0.7 + glow * 0.3;
   ctx.beginPath();
   ctx.strokeStyle = color;
   ctx.lineWidth = width;
-  ctx.lineCap = "round";
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 10;
+  ctx.shadowBlur = 12;
+  traceCurve(ctx, points);
+  ctx.stroke();
+
+  // Inner bright core
+  ctx.beginPath();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+  ctx.lineWidth = width * 0.4;
+  ctx.shadowBlur = 0;
+  traceCurve(ctx, points);
+  ctx.stroke();
+
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+
+  // Animated energy dot traveling along the line
+  const flowPos = (time * 0.8) % 1;
+  const segCount = points.length - 1;
+  const segIdx = Math.floor(flowPos * segCount);
+  const segT = (flowPos * segCount) - segIdx;
+  if (segIdx < segCount) {
+    const dx = points[segIdx].x + (points[segIdx + 1].x - points[segIdx].x) * segT;
+    const dy = points[segIdx].y + (points[segIdx + 1].y - points[segIdx].y) * segT;
+    ctx.beginPath();
+    ctx.arc(dx, dy, 4 + glow * 2, 0, Math.PI * 2);
+    ctx.fillStyle = "white";
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 20;
+    ctx.globalAlpha = 0.8;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur = 0;
+  }
+}
+
+function traceCurve(ctx: CanvasRenderingContext2D, points: { x: number; y: number }[]) {
   ctx.moveTo(points[0].x, points[0].y);
   if (points.length === 2) {
     ctx.lineTo(points[1].x, points[1].y);
@@ -506,6 +693,4 @@ function drawCurve(
     }
     ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
   }
-  ctx.stroke();
-  ctx.shadowBlur = 0;
 }
