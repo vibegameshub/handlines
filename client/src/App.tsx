@@ -74,6 +74,7 @@ export default function App() {
   const lastVideoTimeRef = useRef(-1);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediapipeLoadingRef = useRef(false);
+  const lastLandmarksRef = useRef<{ x: number; y: number }[] | null>(null);
 
   useEffect(() => {
     stageRef.current = stage;
@@ -215,6 +216,7 @@ export default function App() {
 
           if (results.landmarks && results.landmarks.length > 0) {
             const landmarks = results.landmarks[0];
+            lastLandmarksRef.current = landmarks;
             drawHandGraphics(ctx, landmarks, w, h);
 
             const allVisible = PALM_BASE.every(
@@ -237,6 +239,7 @@ export default function App() {
               }
             } else {
               palmStableRef.current = Math.max(0, palmStableRef.current - 2);
+              lastLandmarksRef.current = null;
               if (stageRef.current === "camera") {
                 setStatusText("손바닥을 카메라에 보여주세요");
               }
@@ -444,10 +447,56 @@ export default function App() {
     countdownRef.current = setTimeout(tick, 1000);
   };
 
+  const validatePalm = (): { valid: boolean; message: string } => {
+    const lm = lastLandmarksRef.current;
+    if (!lm) {
+      return { valid: false, message: "손바닥이 감지되지 않았어요.\n손바닥을 펴고 카메라에 가까이 대주세요." };
+    }
+
+    // Check all base landmarks visible
+    const allVisible = PALM_BASE.every(
+      (i) => lm[i].x > 0.05 && lm[i].x < 0.95 && lm[i].y > 0.05 && lm[i].y < 0.95
+    );
+    if (!allVisible) {
+      return { valid: false, message: "손바닥 일부가 화면 밖에 있어요.\n손바닥 전체가 보이도록 조금 뒤로 빼주세요." };
+    }
+
+    // Check palm size
+    const palmWidth = Math.abs(lm[5].x - lm[17].x);
+    if (palmWidth < 0.15) {
+      return { valid: false, message: "손바닥이 너무 작게 보여요.\n카메라에 좀 더 가까이 대주세요." };
+    }
+
+    // Check fingers are spread (not a fist)
+    const fingerTips = [8, 12, 16, 20];
+    const fingerBases = [5, 9, 13, 17];
+    let spreadCount = 0;
+    for (let i = 0; i < fingerTips.length; i++) {
+      const tipY = lm[fingerTips[i]].y;
+      const baseY = lm[fingerBases[i]].y;
+      if (tipY < baseY) spreadCount++; // tip above base = finger extended
+    }
+    if (spreadCount < 3) {
+      return { valid: false, message: "손가락을 펴주세요.\n손바닥을 활짝 펴야 손금이 잘 보여요." };
+    }
+
+    return { valid: true, message: "" };
+  };
+
   const captureAndAnalyze = () => {
     const video = videoRef.current;
     const captureCanvas = captureCanvasRef.current;
     if (!video || !captureCanvas) return;
+
+    // Validate palm quality before API call
+    const validation = validatePalm();
+    if (!validation.valid) {
+      setStage("camera");
+      setStatusText(validation.message);
+      palmStableRef.current = 0;
+      // Keep camera running for retry
+      return;
+    }
 
     captureCanvas.width = video.videoWidth;
     captureCanvas.height = video.videoHeight;
