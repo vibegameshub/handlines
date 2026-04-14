@@ -61,6 +61,7 @@ export default function App() {
   const [count, setCount] = useState(0);
   const [statusText, setStatusText] = useState("");
   const [cameraReady, setCameraReady] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -544,6 +545,39 @@ export default function App() {
     }
   };
 
+  const copyResult = async () => {
+    const text = `✨ AI 손금 분석 결과 ✨\n\n${reading}\n\n🔮 AI 손금 리더에서 분석했어요!`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback for older browsers
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const shareResult = async () => {
+    const text = `✨ AI 손금 분석 결과 ✨\n\n${reading}\n\n🔮 AI 손금 리더에서 분석했어요!\n${window.location.href}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: "AI 손금 분석 결과", text });
+      } catch {
+        // User cancelled share
+      }
+    } else {
+      // Fallback: copy to clipboard
+      await copyResult();
+    }
+  };
+
   const reset = () => {
     stopCamera();
     setStage("idle");
@@ -651,6 +685,14 @@ export default function App() {
                   .replace(/\n/g, "<br/>"),
               }}
             />
+          </div>
+          <div className="buttons">
+            <button className="btn btn-secondary" onClick={copyResult}>
+              {copied ? "&#x2705; 복사됨!" : "&#x1F4CB; 결과 복사"}
+            </button>
+            <button className="btn btn-gold" onClick={shareResult}>
+              &#x1F4E4; 공유하기
+            </button>
           </div>
           <button className="btn btn-primary btn-full" onClick={reset}>
             &#x1F504; 다시 보기
