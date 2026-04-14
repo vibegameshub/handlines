@@ -7,9 +7,17 @@ const PORT = process.env.PORT || 3001;
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",")
-  : ["http://localhost:5173"];
+  : ["http://localhost:5173", "https://*.pages.dev"];
 
-app.use(cors({ origin: allowedOrigins }));
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    const allowed = allowedOrigins.some((o) =>
+      o.includes("*") ? new RegExp(o.replace("*", ".*")).test(origin) : o === origin
+    );
+    callback(null, allowed);
+  },
+}));
 app.use(express.json({ limit: "10mb" }));
 
 const anthropic = new Anthropic();

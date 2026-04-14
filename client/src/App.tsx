@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from "react";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
+const API_URL = import.meta.env.VITE_API_URL || "https://handlines-production.up.railway.app";
 
 type Stage = "capture" | "analyzing" | "result";
 
