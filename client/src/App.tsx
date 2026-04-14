@@ -3,10 +3,9 @@ import { HandLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://handlines-production.up.railway.app";
 
-type Stage = "idle" | "camera" | "detected" | "countdown" | "analyzing" | "result";
+type Stage = "idle" | "camera" | "countdown" | "analyzing" | "result";
 
-// MediaPipe hand landmark indices
-const PALM_BASE = [0, 1, 5, 9, 13, 17]; // wrist + finger bases
+const PALM_BASE = [0, 1, 5, 9, 13, 17];
 
 export default function App() {
   const [stage, setStage] = useState<Stage>("idle");
@@ -15,6 +14,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [count, setCount] = useState(0);
   const [statusText, setStatusText] = useState("");
+  const [cameraReady, setCameraReady] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -26,33 +26,197 @@ export default function App() {
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
   const stageRef = useRef<Stage>("idle");
   const lastVideoTimeRef = useRef(-1);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediapipeLoadingRef = useRef(false);
 
-  // Keep stageRef in sync
   useEffect(() => {
     stageRef.current = stage;
   }, [stage]);
 
   const stopCamera = useCallback(() => {
-    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    if (countdownRef.current) clearTimeout(countdownRef.current);
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = 0;
+    }
+    if (countdownRef.current) {
+      clearTimeout(countdownRef.current);
+      countdownRef.current = null;
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
     palmStableRef.current = 0;
+    setCameraReady(false);
+    lastVideoTimeRef.current = -1;
   }, []);
 
-  const cleanup = useCallback(() => {
-    stopCamera();
-    if (handLandmarkerRef.current) {
-      handLandmarkerRef.current.close();
-      handLandmarkerRef.current = null;
-    }
+  useEffect(() => {
+    return () => {
+      stopCamera();
+      if (handLandmarkerRef.current) {
+        handLandmarkerRef.current.close();
+        handLandmarkerRef.current = null;
+      }
+    };
   }, [stopCamera]);
 
-  useEffect(() => () => cleanup(), [cleanup]);
+  // Load MediaPipe in background (non-blocking)
+  const loadMediaPipe = async () => {
+    if (handLandmarkerRef.current || mediapipeLoadingRef.current) return;
+    mediapipeLoadingRef.current = true;
+    try {
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm"
+      );
+      handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task",
+          delegate: "GPU",
+        },
+        numHands: 1,
+        runningMode: "VIDEO",
+      });
+      console.log("MediaPipe loaded");
+    } catch (err) {
+      console.warn("MediaPipe failed to load, hand detection disabled:", err);
+    }
+    mediapipeLoadingRef.current = false;
+  };
 
-  // Draw palm line graphics on canvas
+  const startCamera = async () => {
+    setError("");
+    setStage("camera");
+    setStatusText("카메라 시작 중...");
+
+    try {
+      // Start camera FIRST — show video immediately
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 960 } },
+      });
+      streamRef.current = stream;
+
+      const video = videoRef.current;
+      if (!video) {
+        throw new Error("비디오 요소를 찾을 수 없습니다.");
+      }
+
+      video.srcObject = stream;
+
+      // Wait for video to actually start playing
+      await new Promise<void>((resolve, reject) => {
+        const onPlaying = () => {
+          video.removeEventListener("playing", onPlaying);
+          video.removeEventListener("error", onError);
+          resolve();
+        };
+        const onError = () => {
+          video.removeEventListener("playing", onPlaying);
+          video.removeEventListener("error", onError);
+          reject(new Error("비디오 재생 실패"));
+        };
+        video.addEventListener("playing", onPlaying);
+        video.addEventListener("error", onError);
+        video.play().catch(reject);
+      });
+
+      setCameraReady(true);
+      setStatusText("손바닥을 카메라에 보여주세요");
+
+      // Load MediaPipe in background — camera works without it
+      loadMediaPipe();
+
+      // Start render/detect loop
+      startDetectLoop();
+    } catch (err) {
+      console.error("Camera error:", err);
+      stopCamera();
+      setError("카메라에 접근할 수 없습니다. 파일 업로드를 이용해주세요.");
+      setStage("idle");
+    }
+  };
+
+  const startDetectLoop = () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    const ctx = canvas.getContext("2d")!;
+
+    const loop = () => {
+      if (!streamRef.current || !videoRef.current) return;
+
+      // Update canvas size to match video
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        }
+      }
+
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      // Try hand detection if MediaPipe is loaded
+      const handLandmarker = handLandmarkerRef.current;
+      if (handLandmarker && video.readyState >= 2 && video.currentTime !== lastVideoTimeRef.current) {
+        lastVideoTimeRef.current = video.currentTime;
+
+        try {
+          const results = handLandmarker.detectForVideo(video, performance.now());
+
+          if (results.landmarks && results.landmarks.length > 0) {
+            const landmarks = results.landmarks[0];
+            drawHandGraphics(ctx, landmarks, w, h);
+
+            const allVisible = PALM_BASE.every(
+              (i) =>
+                landmarks[i].x > 0.05 &&
+                landmarks[i].x < 0.95 &&
+                landmarks[i].y > 0.05 &&
+                landmarks[i].y < 0.95
+            );
+            const palmWidth = Math.abs(landmarks[5].x - landmarks[17].x);
+            const palmBigEnough = palmWidth > 0.15;
+
+            if (allVisible && palmBigEnough) {
+              palmStableRef.current++;
+              if (stageRef.current === "camera") {
+                setStatusText("손바닥 인식됨! 그대로 유지하세요...");
+              }
+              if (palmStableRef.current > 30 && stageRef.current === "camera") {
+                startCountdown();
+              }
+            } else {
+              palmStableRef.current = Math.max(0, palmStableRef.current - 2);
+              if (stageRef.current === "camera") {
+                setStatusText("손바닥을 카메라에 보여주세요");
+              }
+            }
+          } else {
+            palmStableRef.current = Math.max(0, palmStableRef.current - 5);
+            if (stageRef.current === "camera") {
+              setStatusText("손바닥을 카메라에 보여주세요");
+            }
+          }
+        } catch {
+          // Detection error — continue without crashing
+        }
+      }
+
+      // Scan effect
+      if (stageRef.current === "camera") {
+        drawScanEffect(ctx, w, h);
+      }
+
+      animFrameRef.current = requestAnimationFrame(loop);
+    };
+
+    animFrameRef.current = requestAnimationFrame(loop);
+  };
+
   const drawHandGraphics = (
     ctx: CanvasRenderingContext2D,
     landmarks: { x: number; y: number }[],
@@ -61,11 +225,10 @@ export default function App() {
   ) => {
     const lm = landmarks.map((p) => ({ x: p.x * w, y: p.y * h }));
 
-    // Glow effect
     ctx.shadowColor = "#d4a843";
     ctx.shadowBlur = 12;
 
-    // Draw palm outline
+    // Palm outline
     ctx.beginPath();
     ctx.strokeStyle = "rgba(212, 168, 67, 0.6)";
     ctx.lineWidth = 2;
@@ -77,52 +240,42 @@ export default function App() {
     ctx.closePath();
     ctx.stroke();
 
-    // Heart line (below fingers, from pinky side to index side)
+    // Heart line
     drawCurve(ctx, [lm[17], lm[13], lm[9], lm[5]], "#ff6b9d", 2.5);
-
-    // Head line (middle of palm)
-    const headStart = midpoint(lm[0], lm[5]);
-    const headMid1 = midpoint(lm[0], lm[9]);
-    const headMid2 = midpoint(lm[0], lm[13]);
-    const headEnd = midpoint(lm[0], lm[17]);
-    drawCurve(ctx, [headStart, headMid1, headMid2, headEnd], "#64b5f6", 2.5);
-
-    // Life line (curves around thumb)
-    const lifeStart = midpoint(lm[1], lm[5]);
-    const lifeMid1 = lerp(lm[1], lm[0], 0.4);
-    const lifeMid2 = lerp(lm[0], lm[1], 0.7);
-    drawCurve(ctx, [lifeStart, lifeMid1, lifeMid2, lm[0]], "#66bb6a", 2.5);
-
-    // Fate line (wrist to middle finger base)
-    const fateMid = midpoint(lm[0], lm[9]);
-    drawCurve(ctx, [lm[0], fateMid, lm[9]], "#ce93d8", 2);
+    // Head line
+    drawCurve(
+      ctx,
+      [midpoint(lm[0], lm[5]), midpoint(lm[0], lm[9]), midpoint(lm[0], lm[13]), midpoint(lm[0], lm[17])],
+      "#64b5f6",
+      2.5
+    );
+    // Life line
+    drawCurve(ctx, [midpoint(lm[1], lm[5]), lerp(lm[1], lm[0], 0.4), lerp(lm[0], lm[1], 0.7), lm[0]], "#66bb6a", 2.5);
+    // Fate line
+    drawCurve(ctx, [lm[0], midpoint(lm[0], lm[9]), lm[9]], "#ce93d8", 2);
 
     ctx.shadowBlur = 0;
 
-    // Draw landmark dots
-    for (let i = 0; i < lm.length; i++) {
+    // Landmark dots
+    for (const p of lm) {
       ctx.beginPath();
-      ctx.arc(lm[i].x, lm[i].y, 3, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
       ctx.fillStyle = "rgba(240, 208, 120, 0.8)";
       ctx.fill();
     }
 
     // Finger connections
-    const fingers = [[1,2,3,4],[5,6,7,8],[9,10,11,12],[13,14,15,16],[17,18,19,20]];
+    const fingers = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16], [17, 18, 19, 20]];
     ctx.strokeStyle = "rgba(212, 168, 67, 0.3)";
     ctx.lineWidth = 1.5;
-    ctx.shadowBlur = 0;
-    for (const finger of fingers) {
+    for (const f of fingers) {
       ctx.beginPath();
-      ctx.moveTo(lm[finger[0]].x, lm[finger[0]].y);
-      for (let i = 1; i < finger.length; i++) {
-        ctx.lineTo(lm[finger[i]].x, lm[finger[i]].y);
-      }
+      ctx.moveTo(lm[f[0]].x, lm[f[0]].y);
+      for (let i = 1; i < f.length; i++) ctx.lineTo(lm[f[i]].x, lm[f[i]].y);
       ctx.stroke();
     }
   };
 
-  // Scan line effect
   const drawScanEffect = (ctx: CanvasRenderingContext2D, w: number, h: number) => {
     const t = (Date.now() % 3000) / 3000;
     const y = t * h;
@@ -132,114 +285,6 @@ export default function App() {
     gradient.addColorStop(1, "rgba(124, 58, 237, 0)");
     ctx.fillStyle = gradient;
     ctx.fillRect(0, y - 30, w, 60);
-  };
-
-  const initHandDetection = async () => {
-    const vision = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-    );
-    handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: {
-        modelAssetPath:
-          "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task",
-        delegate: "GPU",
-      },
-      numHands: 1,
-      runningMode: "VIDEO",
-    });
-  };
-
-  const startCamera = async () => {
-    setError("");
-    setStage("camera");
-    setStatusText("손바닥을 카메라에 보여주세요");
-
-    try {
-      if (!handLandmarkerRef.current) {
-        setStatusText("AI 모델 로딩 중...");
-        await initHandDetection();
-        setStatusText("손바닥을 카메라에 보여주세요");
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 960 } },
-      });
-      streamRef.current = stream;
-
-      const video = videoRef.current!;
-      video.srcObject = stream;
-      await video.play();
-
-      // Start detection loop
-      detectLoop();
-    } catch {
-      setError("카메라에 접근할 수 없습니다.");
-      setStage("idle");
-    }
-  };
-
-  const detectLoop = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const handLandmarker = handLandmarkerRef.current;
-    if (!video || !canvas || !handLandmarker) return;
-
-    const ctx = canvas.getContext("2d")!;
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-    const w = canvas.width;
-    const h = canvas.height;
-
-    const loop = () => {
-      if (!streamRef.current) return;
-
-      ctx.clearRect(0, 0, w, h);
-
-      // Detect hands
-      if (video.readyState >= 2 && video.currentTime !== lastVideoTimeRef.current) {
-        lastVideoTimeRef.current = video.currentTime;
-        const results = handLandmarker.detectForVideo(video, performance.now());
-
-        if (results.landmarks && results.landmarks.length > 0) {
-          const landmarks = results.landmarks[0];
-          drawHandGraphics(ctx, landmarks, w, h);
-
-          // Check if palm is fully visible (all base landmarks in frame)
-          const allVisible = PALM_BASE.every(
-            (i) => landmarks[i].x > 0.05 && landmarks[i].x < 0.95 && landmarks[i].y > 0.05 && landmarks[i].y < 0.95
-          );
-
-          // Check palm size (should be big enough)
-          const palmWidth = Math.abs(landmarks[5].x - landmarks[17].x);
-          const palmBigEnough = palmWidth > 0.15;
-
-          if (allVisible && palmBigEnough) {
-            palmStableRef.current++;
-
-            if (palmStableRef.current > 30 && stageRef.current === "camera") {
-              // Palm stable for ~1 second, start countdown
-              startCountdown();
-            }
-          } else {
-            palmStableRef.current = Math.max(0, palmStableRef.current - 2);
-          }
-        } else {
-          palmStableRef.current = Math.max(0, palmStableRef.current - 5);
-          if (stageRef.current === "camera") {
-            setStatusText("손바닥을 카메라에 보여주세요");
-          }
-        }
-      }
-
-      // Draw scan effect when detecting
-      if (stageRef.current === "camera" || stageRef.current === "detected") {
-        drawScanEffect(ctx, w, h);
-      }
-
-      animFrameRef.current = requestAnimationFrame(loop);
-    };
-
-    loop();
   };
 
   const startCountdown = () => {
@@ -283,7 +328,6 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
     setError("");
-
     const reader = new FileReader();
     reader.onload = () => {
       const data = reader.result as string;
@@ -324,7 +368,7 @@ export default function App() {
     palmStableRef.current = 0;
   };
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const isCamera = stage === "camera" || stage === "countdown";
 
   return (
     <main className="container">
@@ -333,26 +377,21 @@ export default function App() {
         <p>AI가 당신의 손금을 분석합니다</p>
       </header>
 
-      {/* Camera / Image Area */}
-      <div className={`capture-area${imageData && stage !== "camera" ? " has-image" : ""}${stage === "camera" || stage === "detected" || stage === "countdown" ? " camera-active" : ""}`}>
+      <div className={`capture-area${imageData && !isCamera ? " has-image" : ""}${isCamera ? " camera-active" : ""}`}>
+        {/* Video — always mounted, visibility toggled via CSS */}
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted
-          style={{
-            display: stage === "camera" || stage === "detected" || stage === "countdown" ? "block" : "none",
-          }}
+          className={isCamera ? "visible" : "hidden"}
         />
         <canvas
           ref={canvasRef}
-          className="overlay-canvas"
-          style={{
-            display: stage === "camera" || stage === "detected" || stage === "countdown" ? "block" : "none",
-          }}
+          className={`overlay-canvas ${isCamera ? "visible" : "hidden"}`}
         />
 
-        {imageData && stage !== "camera" && stage !== "countdown" && (
+        {imageData && !isCamera && (
           <img src={imageData} alt="손바닥 사진" />
         )}
 
@@ -365,14 +404,12 @@ export default function App() {
           </>
         )}
 
-        {/* Countdown overlay */}
         {stage === "countdown" && count > 0 && (
           <div className="countdown-overlay">
             <div className="countdown-number">{count}</div>
           </div>
         )}
 
-        {/* Analyzing overlay */}
         {stage === "analyzing" && (
           <div className="analyzing-overlay">
             <div className="crystal-ball">&#x1F52E;</div>
@@ -383,12 +420,12 @@ export default function App() {
 
       <canvas ref={captureCanvasRef} style={{ display: "none" }} />
 
-      {/* Status text */}
-      {statusText && stage !== "result" && stage !== "idle" && stage !== "analyzing" && (
+      {statusText && isCamera && (
         <p className="status-text">{statusText}</p>
       )}
 
-      {/* Buttons */}
+      {error && <p className="error">{error}</p>}
+
       {stage === "idle" && (
         <div className="buttons">
           <button className="btn btn-primary" onClick={startCamera}>
@@ -407,15 +444,13 @@ export default function App() {
         </div>
       )}
 
-      {(stage === "camera" || stage === "detected" || stage === "countdown") && (
+      {isCamera && (
         <div className="buttons">
           <button className="btn btn-secondary" onClick={reset}>
             &#x2715; 취소
           </button>
         </div>
       )}
-
-      {error && <p className="error">{error}</p>}
 
       {stage === "result" && (
         <>
@@ -439,7 +474,6 @@ export default function App() {
   );
 }
 
-// Helpers
 function midpoint(a: { x: number; y: number }, b: { x: number; y: number }) {
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
@@ -461,7 +495,6 @@ function drawCurve(
   ctx.lineCap = "round";
   ctx.shadowColor = color;
   ctx.shadowBlur = 10;
-
   ctx.moveTo(points[0].x, points[0].y);
   if (points.length === 2) {
     ctx.lineTo(points[1].x, points[1].y);
@@ -471,8 +504,7 @@ function drawCurve(
       const yc = (points[i].y + points[i + 1].y) / 2;
       ctx.quadraticCurveTo(points[i].x, points[i].y, xc, yc);
     }
-    const last = points[points.length - 1];
-    ctx.lineTo(last.x, last.y);
+    ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
   }
   ctx.stroke();
   ctx.shadowBlur = 0;

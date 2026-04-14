@@ -110,6 +110,17 @@ body::before {
   border-radius: 1.1rem;
 }
 
+.capture-area video.hidden,
+.capture-area .overlay-canvas.hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.capture-area video.visible,
+.capture-area .overlay-canvas.visible {
+  visibility: visible;
+}
+
 .overlay-canvas {
   position: absolute;
   inset: 0;
