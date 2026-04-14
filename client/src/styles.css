@@ -94,6 +94,12 @@ body::before {
   border-color: var(--gold);
 }
 
+.capture-area.camera-active {
+  border-style: solid;
+  border-color: var(--purple);
+  box-shadow: 0 0 30px var(--purple-glow);
+}
+
 .capture-area video,
 .capture-area img {
   position: absolute;
@@ -102,6 +108,16 @@ body::before {
   height: 100%;
   object-fit: cover;
   border-radius: 1.1rem;
+}
+
+.overlay-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 1.1rem;
+  z-index: 1;
+  pointer-events: none;
 }
 
 .capture-hint {
@@ -242,4 +258,67 @@ body::before {
   text-align: center;
   padding: 1rem;
   font-size: 0.9rem;
+}
+
+/* Status text */
+.status-text {
+  color: var(--gold);
+  font-size: 0.95rem;
+  text-align: center;
+  margin-bottom: 1rem;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Countdown overlay */
+.countdown-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.countdown-number {
+  font-size: 8rem;
+  font-weight: 900;
+  color: white;
+  text-shadow:
+    0 0 40px var(--purple),
+    0 0 80px var(--purple),
+    0 0 120px rgba(124, 58, 237, 0.5);
+  animation: countPop 1s ease-out infinite;
+}
+
+@keyframes countPop {
+  0% { transform: scale(1.5); opacity: 0; }
+  20% { transform: scale(1); opacity: 1; }
+  80% { opacity: 1; }
+  100% { opacity: 0.3; }
+}
+
+/* Analyzing overlay */
+.analyzing-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(13, 10, 26, 0.75);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 1.1rem;
+  z-index: 2;
+}
+
+.analyzing-overlay .crystal-ball {
+  font-size: 3.5rem;
+  animation: float 2s ease-in-out infinite;
+  margin-bottom: 1rem;
+}
+
+.analyzing-overlay p {
+  color: var(--gold);
+  font-size: 1.05rem;
+  animation: pulse 1.5s ease-in-out infinite;
 }
